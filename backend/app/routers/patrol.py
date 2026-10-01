@@ -1,4 +1,4 @@
-"""绿地巡查接口：维护巡查记录，覆盖开始巡查、提交巡查、发起复查等动作。"""
+"""绿地巡查接口：维护巡查记录，覆盖开始巡查、提交巡查、发起复查、复查确认等动作。"""
 from __future__ import annotations
 
 from typing import Any
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/patrol", tags=["绿地巡查"])
 
 service = PatrolService()
 
-LIST_FIELDS = ["巡查编号", "巡查区域", "巡查日期", "巡查人员", "巡查路线", "发现问题", "处置措施", "巡查状态"]
+LIST_FIELDS = ["巡查编号", "巡查区域", "巡查日期", "巡查人员", "巡查路线", "发现问题", "处置措施", "上一处置人", "巡查状态"]
 STATUSES = ["待巡查", "巡查中", "已巡查", "待复查"]
 
 
@@ -28,6 +28,19 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/stats")
+def stats() -> dict[str, Any]:
+    """巡查看板计数：各状态数量随明细逐条重算，动作生效后再读即是最新值。"""
+    return {"module": "patrol", "stats": service.stats()}
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出绿地巡查清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "patrol", "total": total, "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -50,16 +63,9 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条巡查记录执行开始巡查、提交巡查、发起复查；不允许的动作会被拦下并说明原因。"""
+    """对单条巡查记录执行开始巡查、提交巡查、发起复查、复查确认；越序或不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message = service.run_action(entry_id, action, payload.values)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出绿地巡查清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "patrol", "total": total, "items": items}

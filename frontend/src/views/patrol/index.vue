@@ -38,15 +38,18 @@
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
           <td class="row-actions">
-            <button
-              v-for="action in actions"
-              :key="action"
-              class="link"
-              type="button"
-              @click="runAction(action, row)"
-            >
-              {{ action }}
-            </button>
+            <template v-if="actionsFor(row).length">
+              <button
+                v-for="action in actionsFor(row)"
+                :key="action"
+                class="link"
+                type="button"
+                @click="runAction(action, row)"
+              >
+                {{ action }}
+              </button>
+            </template>
+            <span v-else>—</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -57,6 +60,7 @@
 
     <footer class="page-foot">
       <span>共 {{ total }} 条绿地巡查记录</span>
+      <span v-if="noticeMessage" class="notice-text">{{ noticeMessage }}</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -68,18 +72,41 @@ import { onMounted, ref } from 'vue'
 import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
+type StatItem = { label: string; value: number }
 
 const ENDPOINT = '/api/patrol'
-const columns = ["巡查编号", "巡查区域", "巡查日期", "巡查人员", "巡查路线", "发现问题", "处置措施", "巡查状态"]
-const actions = ["开始巡查", "提交巡查", "发起复查"]
+const columns = ["巡查编号", "巡查区域", "巡查日期", "巡查人员", "巡查路线", "发现问题", "处置措施", "上一处置人", "巡查状态"]
 const statuses = ["待巡查", "巡查中", "已巡查", "待复查"]
-const stats = [{"label": "待巡查区域", "value": 0}, {"label": "已巡查记录", "value": 0}, {"label": "待复查记录", "value": 0}]
+// 状态机：待巡查→巡查中→已巡查；已巡查可发起复查进入待复查，复查确认后回到已巡查
+const ACTIONS_BY_STATUS: Record<string, string[]> = {
+  '待巡查': ['开始巡查'],
+  '巡查中': ['提交巡查'],
+  '已巡查': ['发起复查'],
+  '待复查': ['复查确认'],
+}
+// 看板卡片与明细状态的对应关系，数值每次按明细重算
+const STAT_SOURCE: Record<string, string> = {
+  '待巡查区域': '待巡查',
+  '已巡查记录': '已巡查',
+  '待复查记录': '待复查',
+}
 
 const rows = ref<Row[]>([])
 const total = ref(0)
+const stats = ref<StatItem[]>([
+  { label: '待巡查区域', value: 0 },
+  { label: '已巡查记录', value: 0 },
+  { label: '待复查记录', value: 0 },
+])
 const errorMessage = ref('')
+const noticeMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+function actionsFor(row: Row): string[] {
+  const status = String(row.status ?? row['巡查状态'] ?? '')
+  return ACTIONS_BY_STATUS[status] ?? []
+}
 
 function resetFilters() {
   filters.value = {}
@@ -96,15 +123,18 @@ function openCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  noticeMessage.value = ''
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('绿地巡查动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? '绿地巡查动作未生效，请稍后重试')
     }
-    await reload()
+    noticeMessage.value = String(payload.message ?? '')
+    await Promise.all([reload(), reloadStats()])
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '绿地巡查操作失败'
   }
@@ -126,5 +156,25 @@ async function reload() {
   }
 }
 
-onMounted(reload)
+async function reloadStats() {
+  try {
+    const response = await request(`${ENDPOINT}/stats`)
+    if (!response.ok) {
+      throw new Error('巡查看板统计读取失败')
+    }
+    const payload = await response.json()
+    const counts = (payload?.stats ?? {}) as Record<string, number>
+    stats.value = stats.value.map((item) => ({
+      ...item,
+      value: Number(counts[STAT_SOURCE[item.label]] ?? 0),
+    }))
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '巡查看板统计读取失败'
+  }
+}
+
+onMounted(() => {
+  void reload()
+  void reloadStats()
+})
 </script>
